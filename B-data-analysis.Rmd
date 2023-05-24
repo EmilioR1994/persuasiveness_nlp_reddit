@@ -1,0 +1,850 @@
+---
+title: "Data Analysis"
+output: html_document
+---
+### Load libraries
+
+```{r message=FALSE, warning=FALSE}
+library("quanteda", quietly = TRUE, warn.conflicts = FALSE, verbose = FALSE)
+library(tidyverse, quietly = TRUE, warn.conflicts = FALSE, verbose = FALSE)
+library(stringr)
+library(quanteda.textstats)
+library(quanteda.dictionaries)
+library(quanteda.sentiment)
+library(quanteda.textplots)
+library(topicmodels)
+
+```
+
+We now turn to the analysis of the specific characteristics of arguments that make them more persuasive. Using the techniques learned in the class, we will try to determine what is different about comments that receive a delta compared to those that do not.
+
+### 1. What linguistic features make comments more convincing?
+
+- Are comments that receive a delta longer than comments do not?
+- Do comments that receive a delta contain more punctuation than those that do not?
+- Does the text in comments that receive a delta have higher levels of complexity in terms of lexical diversity and readability scores?
+- Are there other linguistic features that vary depending on whether a given comment is likely to be persuasive or not?
+
+### Load data
+
+```{r}
+# Rename the data
+r <- read.csv("cmv-comments.csv", stringsAsFactors = FALSE)
+
+```
+
+### Prepare data
+
+```{r warning=FALSE}
+# Create a corpus
+comments_corpus <- corpus(r$comment)
+# Tokenize the corpus
+comments_tokens <- tokens(comments_corpus)
+# Convert tokenized corpus into a dfm
+comments_dfm <- tokens(comments_tokens)
+# Create a df with the length of each comment
+comments_df <- data.frame(doc_id = docnames(comments_corpus),
+                     comment_length = sapply(comments_tokens, function(x) sum(nchar(x))))
+# Add the delta variable to the df
+comments_df <- cbind(comments_df, delta = r$delta)
+
+```
+
+**Length of Comments**
+
+```{r warning=FALSE}
+# Calculate summary statistics by delta value
+length_by_delta <- comments_df %>%
+  group_by(delta) %>%
+  summarize(min = min(comment_length),
+            max = max(comment_length),
+            median = median(comment_length),
+            mean = mean(comment_length),
+            q25 = quantile(comment_length, 0.25),
+            q75 = quantile(comment_length, 0.75),
+            sd = sd(comment_length))
+
+# Print the results
+round(length_by_delta,1)
+# Create a boxplot of comment lengths by delta value
+ggplot(comments_df, aes(x = delta, y = comment_length, fill = factor(delta))) +
+  geom_boxplot() +
+  scale_fill_manual(values = c("gray50", "gray10")) +
+  facet_wrap(~ delta, ncol = 2) +
+  ylim(20, 2000) +  # set y-axis limits to end at 2,000
+  labs(title = "Relation Between the Length of Comments and Persuasiveness (Delta)",
+       x = "Non-persuasive comments (left); Persuasive comments (right)",
+       y = "Length of Comment") +
+  theme_minimal() +
+  theme(panel.spacing = unit(-12, "cm"),
+        legend.position = "top",
+        legend.margin = margin(-0.2, 0, 0, 0, "cm"),
+        axis.text.x = element_blank(),
+        axis.line.x.top = element_blank(),
+        panel.grid.major.x = element_blank(),
+        panel.grid.minor.x = element_blank(),
+        strip.text.x = element_blank(),
+        legend.text = element_text(size = 15),
+        legend.key.size = unit(3, "lines")) 
+
+```
+
+**Are comments that receive a delta longer than comments do not?**
+
+*Apparently, there is a correlation between the length of the comments and the comments being persuasive (delta = 1). As we can see, after creating a corpus with the comments as documents, and tokenizing the corpus, the mean number of tokens (words) in non-persuasive comments (delta = 0) is 512, whereas the mean number of tokens in persuasive comments is 873. Other descriptive stats such as median, 25, and 75 percentile, printed in the table and better illustrated on the boxplot show that persuasive comments are usually lengthier. The upper limit of the y-values of the plot is limited at 2,000 for a better visualization.*
+
+**Punctuation in comments**
+
+```{r message=FALSE, warning=FALSE}
+# Create a df with the number of punctuation marks in each comment
+comments_punct_df <- r %>%
+  # Use basic regex to count punctuations
+  mutate(punct_count = str_count(comment, "[[:punct:]]")) %>%
+  select(punct_count, delta)
+# Calculate Calculate summary statistics by delta value
+punct_by_delta <- comments_punct_df %>%
+  group_by(delta) %>%
+  summarize(min = min(punct_count),
+            max = max(punct_count),
+            median = median(punct_count),
+            mean = mean(punct_count),
+            q25 = quantile(punct_count, 0.25),
+            q75 = quantile(punct_count, 0.75),
+            sd = sd(punct_count))
+# Print the results
+round(punct_by_delta, 1)
+# Create a boxplot of number of punctuations by delta value
+ggplot(comments_punct_df, aes(x = delta, y = punct_count, fill = factor(delta))) +
+  geom_boxplot() +
+  scale_fill_manual(values = c("gray50", "gray10")) +
+  facet_wrap(~ delta, ncol = 2) +
+  ylim(0, 100) +  # set y-axis limits to end at 100
+  labs(title = "Relation Bewteen Use of Punctuation Marks and Persuasiveness (Delta)",
+       x = "Non-persuasive comments (left); Persuasive comments (right)",
+       y = "Number of Punctuations per Comment") +
+  theme_minimal() +
+  theme(panel.spacing = unit(-12, "cm"),
+        legend.position = "top",
+        legend.margin = margin(-0.2, 0, 0, 0, "cm"),
+        axis.text.x = element_blank(),
+        axis.line.x.top = element_blank(),
+        panel.grid.major.x = element_blank(),
+        panel.grid.minor.x = element_blank(),
+        strip.text.x = element_blank(),
+        legend.text = element_text(size = 15),
+        legend.key.size = unit(3, "lines")) 
+
+```
+
+**Do comments that receive a delta contain more punctuation than those that do not?**
+
+*Similar to the previous result, it seems that persuasive comments are correlated with a larger use of punctuation marks. The mean number of punctuation marks for non-persuasive is 19, while the mean number of punctuation marks for persuasive comments is 35. Other descriptive stats such as median, 25, and 75 percentile, printed in the table and better illustrated on the boxplot show that persuasive comments usually contain more punctuation marks. The upper limit of the y values of the plot is limited at 100 for a better visualization.*
+
+**Lexical diversity**
+
+```{r warning=FALSE}
+# Create a clean tokenized corpus
+comments_clean_tokens <- tokens(comments_corpus,
+                                remove_punct = T,
+                                remove_symbols = T,
+                                remove_numbers = T,
+                                remove_url = T)
+# Remove stopwords for a better analysis of lexical diversity (as in lab-session 1)
+comments_clean_tokens <- tokens_remove(comments_clean_tokens, stopwords("english"))
+# Create a clean dfm from the clean tokenized corpus, nowwithout stopwords as well
+comments_clean_dfm <- dfm(comments_clean_tokens)
+# Extract the lexical diversity according to all measures available in textstat_lexdiv() 
+tstat_lexdiv <- textstat_lexdiv(comments_clean_dfm, measure=c("all"))
+# Add the delta variable to the df and remove Na values
+tstat_lexdiv <- cbind((as.data.frame(tstat_lexdiv)), delta = r$delta) %>%
+  drop_na()
+# Calculate mean of different measures lexical diversity grouped by delta value
+lexdiv_by_delta <- tstat_lexdiv %>%
+  group_by(delta) %>%
+  summarize(# mean stats for different measures for lexical diversity
+            mean_TTR = mean(TTR),
+            mean_C = mean(C),
+            mean_R = mean(R),
+            mean_CTTR = mean(CTTR),
+            mean_K = mean(K),
+            mean_I = mean(I),
+            mean_D = mean(D),
+            mean_Vm = mean(Vm),
+            mean_Maas = mean(Maas))
+# Print the results
+round(lexdiv_by_delta, 2)
+# Create a boxplot of lexical diversity by delta value
+ggplot(tstat_lexdiv, aes(x = delta, y = CTTR, fill = factor(delta))) +
+  geom_boxplot() +
+  scale_fill_manual(values = c("gray50", "gray10")) +
+  facet_wrap(~ delta, ncol = 2) +
+  ylim(0, 10) +
+  labs(title = "Relation Between Type-to-Token (TTR) Ratio and Persuasiveness (Delta)",
+       subtitle = "Measure: Carroll's Corrected TTR (CTTR)",
+       caption = "Higher CTTR values imply higher lexical diversity",
+       x = "Non-persuasive comments (left); Persuasive comments (right)",
+       y = "CTTR Value") +
+  theme_minimal() +
+  theme(panel.spacing = unit(-12, "cm"),
+        legend.position = "top",
+        legend.margin = margin(-0.2, 0, 0, 0, "cm"),
+        axis.text.x = element_blank(),
+        axis.line.x.top = element_blank(),
+        panel.grid.major.x = element_blank(),
+        panel.grid.minor.x = element_blank(),
+        strip.text.x = element_blank(),
+        legend.text = element_text(size = 15),
+        legend.key.size = unit(3, "lines")) 
+
+```
+
+**Text Readability**
+
+```{r warning=FALSE}
+# Extract the text readability according to some of the measures available in textstat_readability() 
+tstat_readability <- textstat_readability(comments_corpus, measure = c("Flesch",
+                                                  "Flesch.Kincaid",
+                                                  "Coleman.Liau.grade", 
+                                                  "ARI", 
+                                                  "SMOG"))
+# Add the delta variable to the df and remove Na values
+tstat_readability <- cbind((as.data.frame(tstat_readability)), delta = r$delta) %>%
+  drop_na() %>%
+  mutate(grade = (Flesch.Kincaid + Coleman.Liau.grade + ARI)/3)
+# Calculate mean of different measures text readability grouped by delta value
+readability_by_delta <- tstat_readability %>%
+  group_by(delta) %>%
+  summarize(# mean stats for different measures for text readability
+            mean_Flesch = mean(Flesch),
+            mean_Flesch.Kincaid = mean(Flesch.Kincaid),
+            mean_Coleman.Liau.grade = mean(Coleman.Liau.grade),
+            mean_ARI = mean(ARI),
+            mean_grade = mean(grade),
+            mean_SMOG = mean(SMOG))
+# Print the results
+round(readability_by_delta, 2)
+# Create a boxplot of text readability by delta value
+ggplot(tstat_readability, aes(x = delta, y = grade, fill = factor(delta))) +
+  geom_boxplot() +
+  scale_fill_manual(values = c("gray50", "gray10")) +
+  facet_wrap(~ delta, ncol = 2) +
+  ylim(0, 20) +
+  labs(title = "Relation Bewteen Text Readability and Persuasiveness (Delta)",
+       subtitle = "Simple mean of average scores of Flesch.Kincaid, Coleman.Liau, and ARI methods",
+       caption = "Values represent the estimated US school grade level required to understand the text",
+       x = "Non-persuasive comments (left); Persuasive comments (right)",
+       y = "Estimated US school grade level") +
+  theme_minimal() +
+  theme(panel.spacing = unit(-12, "cm"),
+        legend.position = "top",
+        legend.margin = margin(-0.2, 0, 0, 0, "cm"),
+        axis.text.x = element_blank(),
+        axis.line.x.top = element_blank(),
+        panel.grid.major.x = element_blank(),
+        panel.grid.minor.x = element_blank(),
+        strip.text.x = element_blank(),
+        legend.text = element_text(size = 15),
+        legend.key.size = unit(3, "lines")) 
+
+```
+
+**Does the text in comments that receive a delta have higher levels of complexity (lexical diversity and readability scores)?**
+
+  1. **Lexical diversity:***The lexical diversity of persuasive comments is higher for some but not all measures that calculate lexical diversity. For this analysis we focused on the corpus that has already been cleaned as it contains no punctuation marks, symbols, numbers and common non-relevant English words ("stopwords"). The mean of the most basic measure, Type-to-Token ratio or "TTR" even suggests that the lexical diversity is larger for non-persuasive comments. In contrast, the mean of other measures such as R, CTTR, K, I, Vm, and Maas suggest the opposite. The plot focuses on the CTTR value, known as the Carroll's Corrected TTR. This measure is good for this data, as it corrects for the length of the text by taking the double of the squared root of the number of tokens (words). Previously, it was shown that the persuasive comments are lengthier. Thus, "CTTR" as well as "I" should compare the lexical diversity better than the common TTR. Still, the mixed results in terms of lexical diversity do not show a highly significant difference between the two types of comments, even though there is some ground to say that persuasive comments are more lexically diverse. The means of different measures are printed above, as well as the boxplot using CTTR. The upper limit of the y-values of the plot is limited at 10 for a better visualization.*
+  
+  2. **Readability:***The results in terms of text readability are similar to the lexical diversity comparison. The mean value of the Flesch measure suggests that the readability is slightly higher for non-persuasive comments. However, other measures suggest the opposite. For example, there are at least three measures (Flesch.Kinkaid, Coleman.Liau, and ARI) whose output is expressed in terms of the US school grade required to understand the text that show that persuasive comments require higher readability levels. The SMOG, that measures the estimated years of schooling to understand the text, also point at higher levels of readability for persuasive comments. The mean values of all the measures before mentdioned are printed in the table above, as well as a boxplot in terms of the simple mean of the three measures that are expressed in terms of the US school grade required to understand the text. Again, even though there is some basis to say that the readability of persuasive comments is higher, the difference to non-persuasive comments is not very significant. The upper limit of the y-values of the plot is limited at 20 for a better visualization.*
+  
+**Question Marks**
+
+```{r}
+# Apply question_mark_counts function to r$comment column
+r_question_marks <- r %>%
+  mutate(question_mark_counts = str_replace_all(comment, "\\?+", "?") %>%
+           str_count("\\?"))
+# Calculate mean and median question_mark_counts grouped by delta
+questions_by_delta <- r_question_marks %>%
+  group_by(delta) %>%
+  summarize(min = min(question_mark_counts),
+            max = max(question_mark_counts),
+            median = median(question_mark_counts),
+            mean = mean(question_mark_counts),
+            q25 = quantile(question_mark_counts, 0.25),
+            q75 = quantile(question_mark_counts, 0.75),
+            sd = sd(question_mark_counts),
+            total_questions = sum(question_mark_counts))
+round(questions_by_delta,2)
+
+```
+
+**Repetition of Meaningful Words**
+
+```{r warning=FALSE}
+# Lowercase tokens
+comments_clean_tokens <- tokens_tolower(comments_clean_tokens)
+# Convert comments_clean_tokens to dfm
+repetitions_dfm <- dfm(comments_clean_tokens)
+# Convert dfm to a data frame
+repetitions_df <- convert(repetitions_dfm, to = "data.frame")
+# Add delta column to dfm
+repetitions_df$delta <- r$delta
+# Create a new column that counts the number of occurrences where a feature variable is greater than 1
+repetitions_df$counter <- rowSums(repetitions_df[,2:ncol(repetitions_df)] > 1)
+# Select only the needed variables
+repetitions_df <- repetitions_df %>%
+  select(doc_id, delta, counter)
+# Calculate summary statistics by delta value
+repetitions_by_delta <- repetitions_df %>%
+  group_by(delta) %>%
+  summarize(min = min(counter),
+            max = max(counter),
+            median = median(counter),
+            mean = mean(counter),
+            q25 = quantile(counter, 0.25),
+            q75 = quantile(counter, 0.75),
+            sd = sd(counter),
+            total_repetitions = sum(counter))
+repetitions_by_delta
+# Create a boxplot of number of non-stopwords repetitions by delta value
+ggplot(repetitions_df, aes(x = delta, y = counter, fill = factor(delta))) +
+  geom_boxplot() +
+  scale_fill_manual(values = c("gray50", "gray10")) +
+  facet_wrap(~ delta, ncol = 2) +
+  ylim(0, 25) +
+  labs(title = "Relation between Repeated and Meaningful Words and Persuasiveness (Delta)",
+       x = "Non-persuasive comments (left); Persuasive comments (right)",
+       y = "Repeated Meaningful Words per Comment") +
+  theme_minimal() +
+  theme(panel.spacing = unit(-12, "cm"),
+        legend.position = "top",
+        legend.margin = margin(-0.2, 0, 0, 0, "cm"),
+        axis.text.x = element_blank(),
+        axis.line.x.top = element_blank(),
+        panel.grid.major.x = element_blank(),
+        panel.grid.minor.x = element_blank(),
+        strip.text.x = element_blank(),
+        legend.text = element_text(size = 15),
+        legend.key.size = unit(3, "lines")) 
+
+```
+
+**Comment's Score**
+
+```{r warning=FALSE}
+# Calculate comment_score summary statistics by delta value
+comment_score_by_delta <- r %>%
+  group_by(delta) %>%
+  summarize(min = min(comment_score),
+            max = max(comment_score),
+            median = median(comment_score),
+            mean = mean(comment_score),
+            q25 = quantile(comment_score, 0.25),
+            q75 = quantile(comment_score, 0.75),
+            sd = sd(comment_score))
+round(comment_score_by_delta, 0)
+# Create a boxplot of comment score by delta value
+ggplot(r, aes(x = delta, y = comment_score, fill = factor(delta))) +
+  geom_boxplot() +
+  scale_fill_manual(values = c("gray50", "gray10")) +
+  facet_wrap(~ delta, ncol = 2) +
+  ylim(-20, 30) +
+  labs(title = "Relation Between the Comment's Score and its Persuasiveness (Delta)",
+       x = "Non-persuasive comments (left); Persuasive comments (right)",
+       y = "Comment's Score") +
+  theme_minimal() +
+  theme(panel.spacing = unit(-12, "cm"),
+        legend.position = "top",
+        legend.margin = margin(-0.2, 0, 0, 0, "cm"),
+        axis.text.x = element_blank(),
+        axis.line.x.top = element_blank(),
+        panel.grid.major.x = element_blank(),
+        panel.grid.minor.x = element_blank(),
+        strip.text.x = element_blank(),
+        legend.text = element_text(size = 15),
+        legend.key.size = unit(3, "lines")) 
+
+```
+
+**Comment's Type**
+
+```{r}
+# Create a dummy variable to distinguish between first comments and replies
+r$replies <- ifelse(grepl("_", r$structure), 1, 0)
+# Create table
+replies_delta_table <- table(r$replies, r$delta)
+# Convert table to data frame
+replies_delta_df <- as.data.frame.table(replies_delta_table)
+names(replies_delta_df) <- c("Replies", "Delta", "Count")
+# Print dataframe
+replies_delta_df
+# Create column plot
+ggplot(replies_delta_df, aes(x = Delta, y = Count, fill = factor(Replies))) +
+  geom_col(position = "dodge") +
+  labs(title = "Relation Between First Comments or Replies with Persuasiveness (Delta)",
+       subtitle = "Replies = 1 means reply; 0 means first comment",
+       x = "Persuasiveness (delta): 1 refer to persuasive comments",
+       y = "Number of comments",
+       fill = "Replies") +
+  theme_minimal() +
+  theme(panel.spacing = unit(-12, "cm"),
+        legend.position = "top",
+        panel.grid.major.x = element_blank(),
+        panel.grid.minor.x = element_blank(),
+        strip.text.x = element_blank(),
+        legend.text = element_text(size = 10),
+        legend.key.size = unit(2, "lines"))
+
+```
+
+
+**Other lingustic features related with persuasiveness**
+
+  1. **Question marks:***One linguistic feature that is common in persuasive arguments is using rhetorical questions. Moreover, in the context of this data, that analyzes comments and replies to comments that try to change the point of view of the original poster, the number of questions written per comment may be an interesting feature. The code provided below counts the number of times a sentence includes at least one question mark. Thus, it counts all question type sentences per comments. According to the results, questions are more common in persuasive comments, and there are 644 question-type sentences in all the persuasive comments in the data. In contrast, there are a totsal of 488 question-type sentences in the non-persuasive comments. As the dataset in terms of delta (persuasiveness) is balanced (745 persuasive comments; 708 non-persuasive comments), the absolute comparison is adequate. However, we can also observe the mean: the average question-type sentences in persuasive comments is 0.86; for non-persuasive comments it drops to 0.69.*
+  
+  2. **Repetition:***Similarly, repeating words is another common technique in persuasive rhetoric. The code above considers the number of repeated relevant words in each comment, and then it groups comments its persuasiveness (delta). Tokens are lowercased, contain no common english ("stopwords" such as 'the', 'and', 'or'), and do not contain numbers, symbols, and punctuations marks. As it turns out, the use of relevant repeated words is a very important linguistic feature to distinguish between persuasive and non-persuasive comments. Persuasive comments (delta = 1) had 12.8 non-stop repeated words used on average (with a median of 8), while non-persuasive comments (delta = 0) had 6.8 non-stop repeated words used on average (with a median of 3). There were more almost twice (1.96) the number of relevant repeated words in persuasive comments, with 9,525 relevant repetitions in persuasive comments in total, compared with the 4,839 observed in non-persuasive comments. The rest of the descriptive stats and the boxplot printed above show how important this feature is. Of course, this feature is correlated with the length of the comments, which are larger for persuasive comments, on average. However, the average length of persuasive comments is nowhere near twice the size of non-persuasive comments, so this feature is still significant. The upper limit of the y-values of the plot is limited at 25 for a better visualization.*
+  
+**Other non-linguistic features related with persuasiveness**
+
+  1. **Comment's Score:***Very briefly, it is important to consider the comment's score and grouped them by its persuasiveness delta. Even though this is not a linguistic feature, it is still important as high scoring comments may lead to higher social pressure to the original poster to change his/her mind. It turns out higher scoring comments are associated with being persuasive comments, as both the boxplot and the descriptive stats printed above show. The y-values of the plot are limited to (-20, 30) for a better visualization.*
+  
+  2. **Comment's Structure:***Finally, it is important to understand that comments in any Reddit's post (also known as submission) can be an original (or first) comment, or a reply to a comment. Thus, it is interesting to see if the type of comment affect its persuasiveness. Apparently, almost half the number of persuasive are first comments (50.2%) and the other half are replies (49.8%). However, there are more replies than first comments in the data, as 57.2% of all comments are replies. Because the data is relatively balanced in terms of persuasive and non-persuasive comments, this finding means that, if a comment is a reply, it is more likely that it will be non-persuasive, as 461 of the 832 replies (55.4%) were non-persuasive. Conversely, it also implies that the likelihood of a first comment being persuasive is larger, as 374 out of the 622 first comments were persuasive (60.1%). Thus, the first interaction with the original poster is associated with a higher likelihood of being persuasive. In terms of strategy, if you want to persuade the original poster, it may be better to present your stronger arguments at first or in an original new comment, instead of replying in an existent comment thread.*
+
+### 2. Does the sentiment of a comment affect its persuasiveness? What about its appeal to moral values?
+
+To answer these questions I will use the sentiment dictionaries included in the `quanteda.dictionaries` package, as well as the Moral Foundations Dictionary (`data_dictionary_MFD`)
+
+```{r warning=FALSE}
+# Normalize the dfm by token length
+comments_weighted_dfm <- dfm(comments_tokens) %>%
+  dfm_weight(scheme="prop")
+# Normalize the clean dfm by token length
+comments_clean_weighted_dfm <- dfm_weight(comments_clean_dfm, scheme="prop")
+
+```
+
+```{r}
+# Create character lists for positive and negative words
+pos_words_1 <- data_dictionary_geninqposneg[["positive"]]
+neg_words_1 <- data_dictionary_geninqposneg[["negative"]]
+sentiment_dict_1 <- dictionary(list(positive = pos_words_1, negative = neg_words_1))
+# Apply dictionary using `dfm_lookup()` function: 
+comments_sentiment_1 <- dfm_lookup(comments_weighted_dfm, dictionary = sentiment_dict_1)
+comments_clean_sentiment_1 <- dfm_lookup(comments_clean_weighted_dfm, dictionary = sentiment_dict_1)
+# Convert dfm into a dictionary
+comments_sentiment_df <- cbind(convert(comments_sentiment_1, to = "data.frame"),
+                               delta = r$delta) %>%
+  drop_na() %>%
+  mutate(sentiment_score = positive - negative) %>%
+  select(doc_id, delta, positive, negative, sentiment_score)
+# Convert clean dfm into a dictionary
+comments_clean_sentiment_df <- cbind(convert(comments_clean_sentiment_1, to = "data.frame"),
+                               delta = r$delta) %>%
+  drop_na() %>%
+  mutate(sentiment_score = positive - negative) %>%
+  select(doc_id, delta, positive, negative, sentiment_score)
+# Build a sentiment analysis table grouped by delta
+comments_sentiment_df$sentiment[comments_sentiment_df$sentiment_score==0] <- "neutral"
+comments_sentiment_df$sentiment[comments_sentiment_df$sentiment_score<0] <- "negative"
+comments_sentiment_df$sentiment[comments_sentiment_df$sentiment_score>0] <- "positive"
+sentiment_table_geninqposneg <- table(comments_sentiment_df$sentiment, comments_sentiment_df$delta)
+# Build a sentiment analysis table grouped by delta for the clean dfm
+comments_clean_sentiment_df$sentiment[comments_clean_sentiment_df$sentiment_score==0] <- "neutral"
+comments_clean_sentiment_df$sentiment[comments_clean_sentiment_df$sentiment_score<0] <- "negative"
+comments_clean_sentiment_df$sentiment[comments_clean_sentiment_df$sentiment_score>0] <- "positive"
+sentiment_table_clean_geninqposneg <- table(comments_clean_sentiment_df$sentiment, comments_clean_sentiment_df$delta)
+
+```
+
+```{r}
+pos_words_2 <- data_dictionary_HuLiu[["positive"]]
+neg_words_2 <- data_dictionary_HuLiu[["negative"]]
+sentiment_dict_2 <- dictionary(list(positive = pos_words_2, negative = neg_words_2))
+# Apply dictionary using `dfm_lookup()` function: 
+comments_sentiment_2 <- dfm_lookup(comments_weighted_dfm, dictionary = sentiment_dict_2)
+comments_clean_sentiment_2 <- dfm_lookup(comments_clean_weighted_dfm, dictionary = sentiment_dict_2)
+# Convert dfm into a dictionary
+comments_sentiment_df <- cbind(convert(comments_sentiment_2, to = "data.frame"),
+                               delta = r$delta) %>%
+  drop_na() %>%
+  mutate(sentiment_score = positive - negative) %>%
+  select(doc_id, delta, positive, negative, sentiment_score)
+# Convert clean dfm into a dictionary
+comments_clean_sentiment_df <- cbind(convert(comments_clean_sentiment_2, to = "data.frame"),
+                               delta = r$delta) %>%
+  drop_na() %>%
+  mutate(sentiment_score = positive - negative) %>%
+  select(doc_id, delta, positive, negative, sentiment_score)
+# Build a sentiment analysis table grouped by delta
+comments_sentiment_df$sentiment[comments_sentiment_df$sentiment_score==0] <- "neutral"
+comments_sentiment_df$sentiment[comments_sentiment_df$sentiment_score<0] <- "negative"
+comments_sentiment_df$sentiment[comments_sentiment_df$sentiment_score>0] <- "positive"
+sentiment_table_HuLiu <- table(comments_sentiment_df$sentiment, comments_sentiment_df$delta)
+# Build a sentiment analysis table grouped by delta for the clean dfm
+comments_clean_sentiment_df$sentiment[comments_clean_sentiment_df$sentiment_score==0] <- "neutral"
+comments_clean_sentiment_df$sentiment[comments_clean_sentiment_df$sentiment_score<0] <- "negative"
+comments_clean_sentiment_df$sentiment[comments_clean_sentiment_df$sentiment_score>0] <- "positive"
+sentiment_table_clean_HuLiu <- table(comments_clean_sentiment_df$sentiment, comments_clean_sentiment_df$delta)
+
+```
+
+```{r}
+pos_words_3 <- data_dictionary_NRC[["positive"]]
+neg_words_3 <- data_dictionary_NRC[["negative"]]
+sentiment_dict_3 <- dictionary(list(positive = pos_words_3, negative = neg_words_3))
+# Apply dictionary using `dfm_lookup()` function: 
+comments_sentiment_3 <- dfm_lookup(comments_weighted_dfm, dictionary = sentiment_dict_3)
+comments_clean_sentiment_3 <- dfm_lookup(comments_clean_weighted_dfm, dictionary = sentiment_dict_3)
+# Convert dfm into a dictionary
+comments_sentiment_df <- cbind(convert(comments_sentiment_3, to = "data.frame"),
+                               delta = r$delta) %>%
+  drop_na() %>%
+  mutate(sentiment_score = positive - negative) %>%
+  select(doc_id, delta, positive, negative, sentiment_score)
+# Convert clean dfm into a dictionary
+comments_clean_sentiment_df <- cbind(convert(comments_clean_sentiment_3, to = "data.frame"),
+                               delta = r$delta) %>%
+  drop_na() %>%
+  mutate(sentiment_score = positive - negative) %>%
+  select(doc_id, delta, positive, negative, sentiment_score)
+# Build a sentiment analysis table grouped by delta
+comments_sentiment_df$sentiment[comments_sentiment_df$sentiment_score==0] <- "neutral"
+comments_sentiment_df$sentiment[comments_sentiment_df$sentiment_score<0] <- "negative"
+comments_sentiment_df$sentiment[comments_sentiment_df$sentiment_score>0] <- "positive"
+sentiment_table_NRC <- table(comments_sentiment_df$sentiment, comments_sentiment_df$delta)
+# Build a sentiment analysis table grouped by delta for the clean dfm
+comments_clean_sentiment_df$sentiment[comments_clean_sentiment_df$sentiment_score==0] <- "neutral"
+comments_clean_sentiment_df$sentiment[comments_clean_sentiment_df$sentiment_score<0] <- "negative"
+comments_clean_sentiment_df$sentiment[comments_clean_sentiment_df$sentiment_score>0] <- "positive"
+sentiment_table_clean_NRC <- table(comments_clean_sentiment_df$sentiment, comments_clean_sentiment_df$delta)
+
+```
+
+```{r}
+# Print tables
+sentiment_table_clean_geninqposneg
+sentiment_table_clean_HuLiu
+sentiment_table_clean_NRC
+
+```
+
+```{r}
+# Calculate positive ratio for delta = 0
+pos_ratio_geninq_0 <- sum(sentiment_table_clean_geninqposneg["positive", "0"]) / sum(sentiment_table_clean_geninqposneg[c("positive", "negative", "neutral"), "0"])
+# Calculate positive ratio for delta = 1
+pos_ratio_geninq_1 <- sum(sentiment_table_clean_geninqposneg["positive", "1"]) / sum(sentiment_table_clean_geninqposneg[c("positive", "negative", "neutral"), "1"])
+# Calculate positive ratio for delta = 0
+pos_ratio_HuLiu_0 <- sum(sentiment_table_clean_HuLiu["positive", "0"]) / sum(sentiment_table_clean_HuLiu[c("positive", "negative", "neutral"), "0"])
+# Calculate positive ratio for delta = 1
+pos_ratio_HuLiu_1 <- sum(sentiment_table_clean_HuLiu["positive", "1"]) / sum(sentiment_table_clean_HuLiu[c("positive", "negative", "neutral"), "1"])
+# Calculate positive ratio for delta = 0
+pos_ratio_NRC_0 <- sum(sentiment_table_clean_NRC["positive", "0"]) / sum(sentiment_table_clean_NRC[c("positive", "negative", "neutral"), "0"])
+# Calculate positive ratio for delta = 1
+pos_ratio_NRC_1 <- sum(sentiment_table_clean_NRC["positive", "1"]) / sum(sentiment_table_clean_NRC[c("positive", "negative", "neutral"), "1"])
+pos_ratio_geninq_1 - pos_ratio_geninq_0
+pos_ratio_HuLiu_1 - pos_ratio_HuLiu_0
+pos_ratio_NRC_1 - pos_ratio_NRC_0
+
+```
+
+```{r}
+# Load the dictionary
+data("data_dictionary_MFD")
+moral <- dfm_lookup(comments_clean_weighted_dfm, dictionary = data_dictionary_MFD)
+moral_sentiment_df <- cbind(convert(moral, to = "data.frame"),
+                               delta = r$delta) %>%
+  mutate(virtue_score = care.virtue + fairness.virtue + loyalty.virtue + authority.virtue + sanctity.virtue -
+           care.vice - fairness.vice - loyalty.vice - authority.vice - sanctity.vice)
+# Calculate moral sentiment summary statistics by delta value
+moral_sentiment_by_delta <- moral_sentiment_df %>%
+  group_by(delta) %>%
+  summarize(min = min(virtue_score),
+            max = max(virtue_score),
+            median = median(virtue_score),
+            mean = mean(virtue_score),
+            q25 = quantile(virtue_score, 0.25),
+            q75 = quantile(virtue_score, 0.75),
+            sd = sd(virtue_score))
+round(moral_sentiment_by_delta, 2)
+
+moral_sentiment_df$morality[moral_sentiment_df$virtue_score==0] <- "neutral"
+moral_sentiment_df$morality[moral_sentiment_df$virtue_score<0] <- "vicious"
+moral_sentiment_df$morality[moral_sentiment_df$virtue_score>0] <- "virtuous"
+moral_table <- table(moral_sentiment_df$morality, moral_sentiment_df$delta)
+moral_table
+
+
+```
+**Your answer here.**
+
+**Sentiment Analysis**
+
+  1. **Positive/Negative:***The dictionaries employed to analyze the positiveness of all comments were: a) Augmented General Inquirer Positiv and Negativ dictionary ("data_dictionary_geninqposneg"); b) Positive and negative word's dictionary from Hu and Liu ("data_dictionary_HuLiu"); and c) NRC Word-Emotion Association Lexicon ("data_dictionary_NRC"). According to the three dictionaries, the ratio of positive comments in the data is slightly higher for persuasive comments. All comments were analyzed with each dictionary with a raw dfm and with a cleaned dfm that removed stopwords, punctuation marks, and other irrelevant features for this analysis. The cleaned and raw dfms were weighted to account for the difference in the length of the comments, because it was already shown that persuasive comments were on average lengthier. The code chunks below show the table results for the cleaned dfm (one for each dictionary), as well as the difference, in percentage points, of the positive ratio for the three cleaned dfms, to show that the positive ratio was slightly higher for persuasive comments. For example, according the NRC dictionary and the cleaned dfm, 55.65% of the non-persuasive comments were positive, whereas 63.49% of persuasive comments were positive. Thus, the difference in positive ratio between persuasive and non-persuasive comments was of 7.48 percentage points, as shown above.*
+  2. **Morality:***In terms of morality, the persuasive comments are more virtuous than the non-persuasive comments. The Moral Foundations Dictionary ("data_dictionary_MFD") contains virtuous and vicious words in terms of care, fairness, loyalty, authority, and sanctity. By applying this dictionary to the cleaned and weighted dfm for all comments, and creating a unique moral score that is the sum of all virtuous scores minus all the vicious scores for each comment, the persuasive comments have a virtuous ratio of 52.62%, more than ten percentage points higher than non-persuasive comments (42.10%). However, the ratio of neutral non-persuasive comments (those were none of the words in the dictionary appear or the moral score is exactly zero) is higher than for persuasive comments (40.5% vs 32.1%), whereas the vicious ratios are similar for both comment categories: 15.3% for persuasive comments, and 17.4% for non-persuasive comments. Hence, it seems that there is more virtuous comments that were persuasive, more amoral (neutral) non-persuasive comments, and a similar ratio of vicious comments between persuasive and non-persuasive comments.*
+
+### 3. Are off-topic comments less likely to be convincing?
+
+To answer this question, compute a metric of distance between `post_text` -- the text of the original post (from the author who wants to be convinced) -- and `comment` -- the text of the comment that was found persuasive. Do this for each row of the dataset. Use any metric that you find appropriate, paying attention as usual to whether any type of normalization is required. Explain why this metric may capture whether a comment is `off-topic` or not.
+
+```{r}
+# create separate data frames for comment and post_text
+comment_r <- r %>%
+  select(title, comment, delta) %>%
+  rename(text = comment) %>%
+  mutate(is_comment = TRUE)
+post_text_r <- r %>%
+  select(title, post_text, delta) %>%
+  rename(text = post_text) %>%
+  mutate(is_comment = FALSE)
+# row bind the two data frames
+longer_r <- bind_rows(comment_r, post_text_r) %>%
+  arrange(title, is_comment) # arrange by title and is_comment columns
+# remove duplicates based on title and text columns
+longer_r <- distinct(longer_r, title, text, .keep_all = TRUE)
+# create an id
+longer_r <- longer_r %>%
+  group_by(title) %>%
+  mutate(title_id = cur_group_id())
+# Add document variables to dfm
+off_topic_dfm <- longer_r$text %>%
+  corpus(docvars = data.frame(title = longer_r$title_id,
+                              is_comment = longer_r$is_comment,
+                              delta = longer_r$delta)) %>% 
+  tokens(remove_punct = TRUE, remove_numbers = TRUE,
+         remove_symbols = TRUE, remove_url = TRUE) %>%
+  tokens_remove(stopwords("en")) %>%
+  tokens_wordstem() %>% 
+  dfm()
+
+```
+```{r}
+# Calculate cosine similarities
+cosine_mat <- as.matrix(textstat_simil(off_topic_dfm, method = "cosine", margin = "documents"))
+cosine_df <- as.data.frame(cosine_mat)
+# Get document names
+docnames <- rownames(cosine_df)
+# Create data frame with document names, titles, and is_comment variables
+docinfo <- data.frame(docname = docnames,
+                      title_id = longer_r$title_id,
+                      is_comment = longer_r$is_comment,
+                      delta = longer_r$delta)
+# Create matcher variable
+matcher <- docinfo %>%
+  filter(!is_comment) %>%
+  group_by(title_id) %>%
+  slice(1) %>%
+  mutate(matcher = docname) %>%
+  select(title_id, matcher)
+# Join data frames
+cosine_df <- cbind(docinfo, cosine_df)
+# Join with matcher
+cosine_df <- cosine_df %>% 
+  left_join(matcher, by = "title_id")
+# Add cosine column
+cosine_df$cosine <- apply(cosine_df, 1, function(x) {
+  colname <- x["matcher"]
+  if (colname %in% colnames(cosine_df)) {
+    x[colname]
+  } else {
+    NA
+  }
+})
+
+```
+
+```{r}
+# Filter df
+cosine_df <- cosine_df %>%
+  filter(is_comment == TRUE) %>%
+  mutate(cosine = as.numeric(cosine)) %>%
+  drop_na(cosine) %>%
+  select(docname, title_id, cosine, delta)
+# Calculate summary statistics by delta value
+cosine_by_delta <- cosine_df %>%
+  group_by(delta) %>%
+  summarize(min = min(cosine),
+            max = max(cosine),
+            median = median(cosine),
+            mean = mean(cosine),
+            q25 = quantile(cosine, 0.25),
+            q75 = quantile(cosine, 0.75),
+            sd = sd(cosine))
+cosine_by_delta
+# Create a boxplot of number of non-stopwords repetitions by delta value
+ggplot(cosine_df, aes(x = delta, y = cosine, fill = factor(delta))) +
+  geom_boxplot() +
+  scale_fill_manual(values = c("gray50", "gray10")) +
+  facet_wrap(~ delta, ncol = 2) +
+  labs(title = "Relation between Off-topic comments and Persuasiveness (Delta)",
+       x = "Non-persuasive comments (left); Persuasive comments (right)",
+       y = "Cosine similarity with original post",
+       caption = "Higher values means comments more similar to original post") +
+  theme_minimal() +
+  theme(panel.spacing = unit(-12, "cm"),
+        legend.position = "top",
+        legend.margin = margin(-0.2, 0, 0, 0, "cm"),
+        axis.text.x = element_blank(),
+        axis.line.x.top = element_blank(),
+        panel.grid.major.x = element_blank(),
+        panel.grid.minor.x = element_blank(),
+        strip.text.x = element_blank(),
+        legend.text = element_text(size = 15),
+        legend.key.size = unit(3, "lines")) 
+
+```
+
+**Your answer here.**
+*For this exercise we will use cosine similarity, that can be applied using the textstat_simil() function from quanteda. Cosine similarity is a good metric for this exercise because it is unaffected by document length, as it focuses on the angle between two vectors, rather than just their magnitudes (length). In other words, cosine similarity measures the similarity between two text documents by comparing the frequency of words in the two documents. Each document is represented as a vector of word frequencies, and the cosine similarity between the two vectors is calculated as the cosine of the angle between them.* 
+*According to the results, non-persuasive comments are slightly more off-topic than persuasive comments, as the mean and median value of the cosine similarity between non-persuasive comments and its correspondent original post they reply to is 0.21 (mean) and 0.19 (median); for persuasive comments (delta = 1) the mean and median values are 0.25 and 0.24, respectively. By using the mean values, we can establish that persuasive comments are 3.8 percentage points more similar to the original post in terms of the topic by 3.8 percentage points than non-persuasive comments.*
+
+### 4. What words appear to be good predictors of persuasion?
+
+Are there specific words that are predictive that a thread or comment will lead to persuasion? Or maybe some specific issues about which more people are likely to change their view? To answer this question, we will use keyness analysis to detect which words are more likely to appear in comments that persuade people (`comment` variable) and in the text of the post (`post_text`) that started the conversation.
+
+```{r}
+# Analysis between persuasive and non persuasive comments
+docvars(comments_clean_dfm, "delta") <- r$delta
+delta_dfm <- comments_clean_dfm %>%
+  dfm_group(groups = delta)
+(head(delta <- textstat_keyness(delta_dfm), 20))
+(tail(delta <- textstat_keyness(delta_dfm), 20))
+
+```
+
+```{r}
+r_by_title <- r %>%
+  group_by(title) %>%
+  mutate(has_persuasive = ifelse(any(delta == 1), 1, 0)) %>%
+  ungroup() %>%
+  select(title, post_text, has_persuasive) %>%
+  distinct(title, post_text, has_persuasive)
+# Create a corpus
+posts_corpus <- corpus(r_by_title$post_text)
+# Create a clean tokenized corpus
+posts_corpus_toks <- tokens(posts_corpus,
+                                remove_punct = T,
+                                remove_symbols = T,
+                                remove_numbers = T,
+                                remove_url = T)
+# Remove stopwords for a better analysis of lexical diversity (as in lab-session 1)
+posts_corpus_toks <- tokens_remove(posts_corpus_toks, stopwords("english"))
+# Create a clean dfm from the clean tokenized corpus, nowwithout stopwords as well
+posts_corpus_dfm <- dfm(posts_corpus_toks)
+# Analysis between persuasive and non persuasive comments
+docvars(posts_corpus_dfm, "has_persuasive") <- r_by_title$has_persuasive
+delta_posts_dfm <- posts_corpus_dfm %>%
+  dfm_group(groups = has_persuasive)
+(head(delta <- textstat_keyness(delta_posts_dfm), 20))
+(tail(delta <- textstat_keyness(delta_posts_dfm), 20))
+
+```
+
+
+**Your answer here.**
+
+**Keyness analysis**
+*The first thing for this analysis is to group the documents form the cleaned dfm in persuasive and non-persuasive comments. Afterwards, textstat_keyness() is used, and the target is the document that bind all persuasive comments together. Hence, the first twenty entries (head(...) show the words (features) that are significantly more frequent among the persuasive comments in contrast with non-persuasive comments, whereas the last twenty entries (tail()) show the opposite. For the analysis of posts we start by creating a dfm for where post_text are the documents. Then we group the post text into two categories: posts in which at least one persuasive comment was included, other posts. Of the 633 unique posts, 381 (60.2%) have at least one persuasive comment, while 252 (39.8%) does not have any persuasive comment in the post's thread. A similar analysis of printing the first (head()) and last (tail()) features in terms of keyness is performed, albeit the grouping variable is if the post has any persuasive comment in the thread or not.*
+  
+  1. **Comments:**
+  
+  1.1. **Frequent features in persuasive comments:***Very interesting features appear in the top 20, such as: christian, racist, race, black, and electoral. This features can be grouped in three categories: religion, racism, and democracy/voting discussions. By analyzing the keyness of the comments, it seems these topics, especially racism because of the number of features that appear in the top 20, are more prone to be included in persuasive comments.*
+   
+  1.2. **Infrequent features in persuasive comments:***In contrast, grouped features that appear in the bottom 20 that are worthy of highlighting are: 1. robots, water, and mars; 2. power, million, poverty, inequality, and privilege; 3. mental, happiness, and suicide; and 4. trans. This four features can be thought as four different topics, all of which seem to be very difficult to lead to persuasion: 1. the future; 2. criticism to capitalism; 3. mental health; and 4. trans rights.*
+  
+  2. **Posts:**
+    
+  2.1. **Frequent features in posts with at least one persuasive comment:***Topics such as the recent antisemitism that started with Kanye ("antisemitism", "kanye"); and about cars and its damage to the environment ("cars", "emissions") seem to be post topics that are more likely to include persuasive comments.*
+    
+  2.2. **Frequent features in posts with no persuasive comments:***In contrast, posts with arguments about the key questions of human life (with features such as "life", "morality", "philosophy", and "human"), robots, and conspiracy theories ("holocaust", "deny", "campaign", "conspiracy") are seemingly less likely to include persuasive comments.*
+
+### 5. Is persuasion more likely to happen for some topics than others?
+
+Are specific topics about which people are more likely to change their mind? To answer this question, we will fit a topic model with the text of the original post (`post_text`). We will also choose a number of topics that seems appropriate. Then, we will add a new variable to the data frame that refers to the most likely topic for that post. Finally, we will compute the proportion of threads related to that topic for which a delta was assigned.
+
+```{r message=FALSE, warning=FALSE}
+posts_corpus_toks_clean <- tokens_remove(posts_corpus_toks,
+                                         c("also", "s", "t", "m", "get", "go", "can", "ubi", "cmv", 
+                                           "downvotes", "amp", "#x200b", "one", "said", "say",
+                                           "comment", "views", "firstly", "gt", "etc", "don", "use",
+                                           "however", "think", "saying"))
+posts_corpus_dfm_clean <- dfm(posts_corpus_toks_clean)
+posts_corpus_dfm_trim <- dfm(posts_corpus_dfm_clean) %>%
+  dfm_trim(min_docfreq = 2)
+# estimate LDA with K topics
+K <- 4
+# We throw away the first 100 iterations with the burnin, and the we resample 500 for the model
+lda <- LDA(posts_corpus_dfm_trim, k = K, method = "Gibbs", 
+                control = list(verbose=25L, seed = 123, burnin = 100, iter = 500))
+
+```
+
+```{r}
+r_by_title <- r %>%
+  group_by(title) %>%
+  mutate(has_persuasive = ifelse(any(delta == 1), 1, 0)) %>%
+  ungroup() %>%
+  select(title, post_text, has_persuasive) %>%
+  distinct(title, post_text, has_persuasive)
+
+topics <- get_topics(lda, 1) %>%
+  as.data.frame() %>%
+  rename(main_topic = ".") %>%
+  rownames_to_column("id")
+r_by_title <- cbind(topics, r_by_title)
+
+# Count main topics for has_persuasive = 1
+freq_has_persuasive_1 <- r_by_title %>%
+  filter(has_persuasive == 1) %>%
+  count(main_topic, sort = TRUE) %>%
+  mutate(share = round(n/sum(n),2)) %>%
+  rename(occurrences = n)
+# Count main topics for has_persuasive = 0
+freq_has_persuasive_0 <- r_by_title %>%
+  filter(has_persuasive == 0) %>%
+  count(main_topic, sort = TRUE) %>%
+  mutate(share = round(n/sum(n),2)) %>%
+  rename(occurrences = n)
+
+topics_persuasive <- inner_join(freq_has_persuasive_1,
+                                freq_has_persuasive_0,
+                                by = "main_topic",
+                                suffix = c("_pers", "_non-pers"))
+topics_persuasive
+
+```
+
+```{r}
+# Select main topics and get the first 20 terms for each topic
+maintopics <- get_topics(lda, 1)
+terms <- get_terms(lda, 20)
+# Topic 1
+# Take the vector of terms of topic 1
+paste(terms[,1], collapse=", ")
+# Random sample of topics assigned to topic number 1
+sample(r_by_title$post_text[maintopics==1], 1)
+
+# CODE FOR SIMILAR ANALYSIS FOR THE OTHER THREE TOPICS
+# Topic 2
+# Take the vector of terms of topic 2
+##paste(terms[,2], collapse=", ")
+# Random sample of topics assigned to topic number 2
+##sample(r_by_title$post_text[maintopics==2], 1)
+# Topic 3
+# Take the vector of terms of topic 3
+##paste(terms[,3], collapse=", ")
+# Random sample of topics assigned to topic number 3
+##sample(r_by_title$post_text[maintopics==3], 1)
+# Topic 4
+# Take the vector of terms of topic 4
+##paste(terms[,4], collapse=", ")
+# Random sample of topics assigned to topic number 4
+##sample(r_by_title$post_text[maintopics==4], 1)
+
+```
+
+
+**Your answer here.**
+*For this exercise we need to distinguish between posts that had at least one persuasive comment in its thread and posts with no persuasive comments at all. Again, there were 633 different posts, and 381 had at least one persuasive comment. Also, for this exercise we removed features that are irrelevant for topic modeling. Afterwards we conducted an LDA model choosing four topics. Then, we extracted the main topic for each of post_text and then we grouped between post with and without persuasive comments.*
+*According to the results, topic 2 is the most prevalent among posts with persuasive comments, with a share of 30%, 5 percentage points higher than the share of this topic in posts without persuasive comments. After printing the most important terms and a random posttext were the main topic is #2, it seems like this topic is associated with life, as it includes features such as "life", "people", "children", etc. It does not seem to be a very informative topic.*
+*Topic 1 is apparently associated with capitalism and political systems as it includes features such as: "us", "effective", "system", "money", "rules", "free", "change", "people". and even though it is the second most prevalent topic among posts with persuasive comment with a share of 24%, it is relatively less frequent than in posts with no persuasive comments, which has a share of 32%, almost one out of every three posts. Thus, it can be argued that this topic is less likely to lead to persuasive comments, a result similar to what was found in the previous question.*
+*Topic 4 is as prevalent among posts with persuasive comments as topic 2, but it is much less prevalent among posts without persuasive comments. However, the share for the two categories is very similar (24% for posts with persuasive comments; 23% for posts without persuasive comments). Hence, it is difficult to say that this topic, which is highly associated with discussions about gender, sexual orientation, and women, is more likely to lead to persuasive comments.*
+*Finally, topic 3 is the main topic in only 22% of the posts with persuasive comments, and 20% for posts without persuasive comments, which lead to a similar conclusion in terms of likelihood of including persuasive comments as with topic 4. According to the LDA, topic 3 is associated with topics such as racism, political views, and the media.*
+
